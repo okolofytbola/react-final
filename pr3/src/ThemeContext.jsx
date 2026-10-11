@@ -7,15 +7,10 @@ export function ThemeProvider({ children }) {
 
   useEffect(() => {
     localStorage.setItem("theme", theme);
-    document.body.style.margin = "0";
-    document.body.style.backgroundColor = theme === "light" ? "#ffffff" : "#1c1c1c";
+    document.documentElement.dataset.theme = theme;
   }, [theme]);
 
-  return (
-    <ThemeContext.Provider value={{ theme, setTheme }}>
-      {children}
-    </ThemeContext.Provider>
-  );
+  return <ThemeContext.Provider value={{ theme, setTheme }}>{children}</ThemeContext.Provider>;
 }
 
 export function useTheme() {

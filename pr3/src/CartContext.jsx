@@ -1,46 +1,66 @@
-import { createContext, useState, useEffect, useContext } from "react";
+import { createContext, useState, useEffect, useContext, useCallback } from "react";
 import { useAuth } from "./AuthContext";
+import { useOnRecovered } from "./utils";
 import * as api from "./api";
 
 const CartContext = createContext();
+const EMPTY_TOTALS = { totalBefore: 0, totalAfter: 0, totalSaved: 0, itemsCount: 0 };
+const DEFAULT_LIMITS = { maxQty: 10, dayCapacity: 10, reserveMinutes: 60 };
 
 export function CartProvider({ children }) {
   const { user } = useAuth();
+  const token = user ? user.token : null;
+  const isShopper = Boolean(user) && user.role === "user";
+
   const [cart, setCart] = useState([]);
+  const [totals, setTotals] = useState(EMPTY_TOTALS);
+  const [limits, setLimits] = useState(DEFAULT_LIMITS);
   const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
 
-  function loadCart() {
-    if (!user || user.role === "admin") {
+  const loadCart = useCallback(async () => {
+    if (!token || !isShopper) {
       setCart([]);
+      setTotals(EMPTY_TOTALS);
+      setLoaded(true);
       return;
     }
     setLoading(true);
-    setError("");
-    api
-      .getCart(user.token)
-      .then(setCart)
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }
-
-  useEffect(() => {
-    loadCart();
-  }, [user]);
-
-  async function addToCart(carId) {
     try {
-      await api.addToCart(user.token, carId);
-      loadCart();
+      const data = await api.getCart(token);
+      setCart(data.items);
+      setTotals(data.totals);
+      setLimits({
+        maxQty: data.maxQty || DEFAULT_LIMITS.maxQty,
+        dayCapacity: data.dayCapacity || DEFAULT_LIMITS.dayCapacity,
+        reserveMinutes: data.reserveMinutes || 60,
+      });
+      setError("");
     } catch (err) {
       setError(err.message);
+    } finally {
+      setLoading(false);
+      setLoaded(true);
     }
+  }, [token, isShopper]);
+
+  useEffect(() => {
+    setLoaded(false);
+    loadCart();
+  }, [loadCart]);
+
+  useOnRecovered(loadCart);
+
+  async function addToCart(carId) {
+    await api.addToCart(token, carId);
+    await loadCart();
   }
 
   async function changeQuantity(itemId, quantity) {
     try {
-      await api.updateCartQuantity(user.token, itemId, quantity);
-      loadCart();
+      await api.updateCartQuantity(token, itemId, quantity);
+      await loadCart();
     } catch (err) {
       setError(err.message);
     }
@@ -48,15 +68,20 @@ export function CartProvider({ children }) {
 
   async function removeItem(itemId) {
     try {
-      await api.removeFromCart(user.token, itemId);
-      loadCart();
+      await api.removeFromCart(token, itemId);
+      await loadCart();
     } catch (err) {
       setError(err.message);
     }
   }
 
   return (
-    <CartContext.Provider value={{ cart, loading, error, addToCart, changeQuantity, removeItem, reloadCart: loadCart }}>
+    <CartContext.Provider
+      value={{
+        cart, totals, limits, dayCapacity: limits.dayCapacity, maxQty: limits.maxQty, reserveMinutes: limits.reserveMinutes,
+        loading, loaded, error, addToCart, changeQuantity, removeItem, reloadCart: loadCart,
+      }}
+    >
       {children}
     </CartContext.Provider>
   );

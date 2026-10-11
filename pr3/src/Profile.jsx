@@ -1,125 +1,238 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "./AuthContext";
-import { useTheme } from "./ThemeContext";
+import {
+  useOnRecovered, rub, formatDate, formatDay, validPhone, PHONE_PLACEHOLDER, PHONE_ERROR,
+  personNameError, formatPhone, ORDER_STATUSES, PAYMENT_STATUSES, EMAIL_RE,
+} from "./utils";
 import * as api from "./api";
 
 function Profile() {
-  const { user, setUser } = useAuth();
-  const { theme } = useTheme();
+  const { user, updateUser } = useAuth();
+
+  const [form, setForm] = useState({ fullName: user.fullName || "", email: user.email || "", phone: user.phone || "", address: user.address || "" });
+  const [infoErrors, setInfoErrors] = useState({});
+  const [infoMsg, setInfoMsg] = useState({ type: "", text: "" });
+  const [infoSaving, setInfoSaving] = useState(false);
+
   const [currentPassword, setCurrentPassword] = useState("");
-  const [email, setEmail] = useState(user.email);
-  const [address, setAddress] = useState(user.address || "");
   const [password, setPassword] = useState("");
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
+  const [repeat, setRepeat] = useState("");
+  const [secMsg, setSecMsg] = useState({ type: "", text: "" });
+  const [secSaving, setSecSaving] = useState(false);
+
   const [orders, setOrders] = useState([]);
+  const [ordersLoading, setOrdersLoading] = useState(true);
   const [ordersError, setOrdersError] = useState("");
+  const [payingId, setPayingId] = useState(null);
 
-  const isLight = theme === "light";
-  const textColor = isLight ? "#000000" : "#ffffff";
-  const borderColor = isLight ? "#ddd" : "#444";
-  const cardStyle = {
-    maxWidth: "360px",
-    margin: "40px auto",
-    padding: "24px",
-    borderRadius: "10px",
-    border: `1px solid ${borderColor}`,
-    boxShadow: isLight ? "0 2px 10px rgba(0,0,0,0.08)" : "0 2px 10px rgba(0,0,0,0.4)",
-  };
-  const historyStyle = {
-    maxWidth: "500px",
-    margin: "20px auto 40px",
-    padding: "20px",
-    borderRadius: "10px",
-    border: `1px solid ${borderColor}`,
-  };
-  const inputStyle = { width: "100%", padding: "8px", boxSizing: "border-box", marginTop: "4px" };
-  const labelStyle = { color: textColor, fontSize: "14px", display: "block", marginTop: "12px" };
-  const btnStyle = {
-    backgroundColor: isLight ? "#eeeeee" : "#444444",
-    color: textColor,
-    width: "100%",
-    padding: "8px",
-    marginTop: "18px",
-  };
-
-  useEffect(() => {
+  const loadOrders = useCallback(() => {
+    setOrdersLoading(true);
     api
       .getOrders(user.token)
-      .then(setOrders)
-      .catch((err) => setOrdersError(err.message));
-  }, []);
+      .then((list) => {
+        setOrders(list);
+        setOrdersError("");
+      })
+      .catch((err) => setOrdersError(err.message))
+      .finally(() => setOrdersLoading(false));
+  }, [user.token]);
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    setError("");
-    setMessage("");
-    if (!currentPassword) {
-      setError("Введите текущий пароль для подтверждения");
-      return;
-    }
+  useEffect(() => {
+    loadOrders();
+  }, [loadOrders]);
+  useOnRecovered(loadOrders);
+
+  const setField = (key) => (e) => setForm((prev) => ({ ...prev, [key]: e.target.value }));
+
+  async function payOrder(order) {
+    setOrdersError("");
+    setPayingId(order.id);
     try {
-      const result = await api.updateProfile(user.token, currentPassword, email, password, address);
-      setUser({ ...user, email: result.email, address: result.address });
-      setMessage("Данные обновлены");
-      setCurrentPassword("");
-      setPassword("");
+      await api.payOrder(user.token, order.id);
+      loadOrders();
     } catch (err) {
-      setError(err.message);
+      setOrdersError(err.message);
+    } finally {
+      setPayingId(null);
     }
   }
 
+  async function saveInfo(e) {
+    e.preventDefault();
+    setInfoMsg({ type: "", text: "" });
+    const next = {};
+    const nameError = personNameError(form.fullName);
+    if (nameError) next.fullName = nameError;
+    if (!EMAIL_RE.test(form.email.trim())) next.email = "Введите корректный email";
+    if (!validPhone(form.phone)) next.phone = PHONE_ERROR;
+    setInfoErrors(next);
+    if (Object.keys(next).length) return;
+    setInfoSaving(true);
+    try {
+      const updated = await api.updateProfile(user.token, {
+        fullName: form.fullName,
+        email: form.email.trim(),
+        phone: form.phone.trim(),
+        address: form.address,
+      });
+      updateUser(updated);
+      setInfoMsg({ type: "success", text: "Данные сохранены. Адрес будет подставляться при оформлении заказа." });
+    } catch (err) {
+      setInfoMsg({ type: "error", text: err.message });
+    } finally {
+      setInfoSaving(false);
+    }
+  }
+
+  async function savePassword(e) {
+    e.preventDefault();
+    setSecMsg({ type: "", text: "" });
+    if (!currentPassword) return setSecMsg({ type: "error", text: "Введите текущий пароль" });
+    if (!password) return setSecMsg({ type: "error", text: "Введите новый пароль" });
+    if (password.length < 6) return setSecMsg({ type: "error", text: "Новый пароль не короче 6 символов" });
+    if (password !== repeat) return setSecMsg({ type: "error", text: "Пароли не совпадают" });
+    setSecSaving(true);
+    try {
+      await api.updateProfile(user.token, { currentPassword, password });
+      setCurrentPassword("");
+      setPassword("");
+      setRepeat("");
+      setSecMsg({ type: "success", text: "Пароль изменён" });
+    } catch (err) {
+      setSecMsg({ type: "error", text: err.message });
+    } finally {
+      setSecSaving(false);
+    }
+  }
+
+  const initial = (user.fullName || user.email || "?").trim().charAt(0).toUpperCase();
+  const msg = (m) => m.text && <div className={`alert ${m.type === "error" ? "alert-error" : "alert-success"}`}>{m.text}</div>;
+  const field = (key, label, props = {}) => (
+    <label className="field">
+      <span>{label}</span>
+      <input className={`input ${infoErrors[key] ? "invalid" : ""}`} value={form[key]} onChange={setField(key)} {...props} />
+      {infoErrors[key] && <small className="error">{infoErrors[key]}</small>}
+    </label>
+  );
+
   return (
-    <div>
-      <div style={cardStyle}>
-        <h2 style={{ color: textColor, margin: 0, textAlign: "center" }}>Профиль</h2>
-        <form onSubmit={handleSubmit}>
-          <label style={labelStyle}>
-            Email
-            <input style={inputStyle} value={email} onChange={(e) => setEmail(e.target.value)} />
-          </label>
-          <label style={labelStyle}>
-            Адрес доставки
-            <input style={inputStyle} value={address} onChange={(e) => setAddress(e.target.value)} />
-          </label>
-          <label style={labelStyle}>
-            Новый пароль
+    <div className="page profile">
+      <section className="card profile-head">
+        <div className="avatar">{initial}</div>
+        <div className="grow">
+          <h2>{user.fullName}</h2>
+          <p className="muted">{user.email}{user.phone ? ` · ${user.phone}` : ""}</p>
+          <p className="small">{user.address ? `Адрес по умолчанию: ${user.address}` : "Адрес по умолчанию не указан"}</p>
+        </div>
+        <div>
+          {user.coupon ? (
+            <span className="badge badge-coupon">
+              Купон {user.coupon.code} · −{user.coupon.percent}%
+              {user.coupon.firstOrderOnly ? " · только на первый заказ" : ""}
+            </span>
+          ) : (
+            <span className="badge">Купона нет</span>
+          )}
+          {user.coupon && user.coupon.firstOrderOnly && (
+            <p className="muted small">Приветственный купон действует только на первый заказ.</p>
+          )}
+        </div>
+      </section>
+
+      <div className="profile-grid">
+        <form className="card form" onSubmit={saveInfo} noValidate>
+          <h3>Личная информация</h3>
+          {field("fullName", "ФИО")}
+          {field("email", "Email (логин)")}
+          <label className="field">
+            <span>Телефон</span>
             <input
-              style={inputStyle}
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="оставьте пустым, если не меняете"
+              className={`input ${infoErrors.phone ? "invalid" : ""}`}
+              value={form.phone}
+              onChange={(e) => setForm((prev) => ({ ...prev, phone: formatPhone(e.target.value) }))}
+              placeholder={PHONE_PLACEHOLDER}
+              inputMode="tel"
             />
+            <small className="muted">Формат: {PHONE_PLACEHOLDER}</small>
+            {infoErrors.phone && <small className="error">{infoErrors.phone}</small>}
           </label>
-          <label style={labelStyle}>
-            Текущий пароль
-            <input
-              style={inputStyle}
-              type="password"
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-            />
+          {field("address", "Адрес по умолчанию", { placeholder: "Город, улица, дом, квартира" })}
+          {msg(infoMsg)}
+          <button className="btn btn-primary btn-block" disabled={infoSaving}>{infoSaving ? "Сохраняем..." : "Сохранить"}</button>
+        </form>
+
+        <form className="card form" onSubmit={savePassword} noValidate>
+          <h3>Изменение пароля</h3>
+          <label className="field">
+            <span>Текущий пароль</span>
+            <input className="input" type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
           </label>
-          {error && <p style={{ color: "#c0392b" }}>{error}</p>}
-          {message && <p style={{ color: "#27ae60" }}>{message}</p>}
-          <button type="submit" style={btnStyle}>Сохранить</button>
+          <label className="field">
+            <span>Новый пароль</span>
+            <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          </label>
+          <label className="field">
+            <span>Повторите новый пароль</span>
+            <input className="input" type="password" value={repeat} onChange={(e) => setRepeat(e.target.value)} />
+          </label>
+          {msg(secMsg)}
+          <button className="btn btn-primary btn-block" disabled={secSaving}>{secSaving ? "Сохраняем..." : "Изменить пароль"}</button>
         </form>
       </div>
 
-      <div style={historyStyle}>
-        <h3 style={{ color: textColor, marginTop: 0 }}>История заказов</h3>
-        {ordersError && <p style={{ color: "#c0392b" }}>{ordersError}</p>}
-        {!ordersError && orders.length === 0 && <p style={{ color: textColor }}>Заказов пока нет</p>}
-        {orders.map((order) => {
-          const count = order.items.reduce((sum, item) => sum + item.quantity, 0);
-          return (
-            <div key={order.id} style={{ borderBottom: `1px solid ${borderColor}`, padding: "8px 0", color: textColor }}>
-              Заказ №{order.id} — {count} шт. на сумму {Math.round(order.total_after).toLocaleString("ru-RU")} ₽
+      <section className="card">
+        <h3>Мои заказы</h3>
+        <p className="muted small">
+          У каждого заказа один номер и одна общая сумма на все комплектующие.
+        </p>
+        {ordersLoading && <p className="muted">Загрузка заказов...</p>}
+        {ordersError && (
+          <div className="alert alert-error">
+            <span>{ordersError}</span>
+            <button className="btn btn-sm" onClick={loadOrders}>Повторить</button>
+          </div>
+        )}
+        {!ordersLoading && !ordersError && orders.length === 0 && <p className="muted">Заказов пока нет.</p>}
+        {orders.map((order) => (
+          <div key={order.id} className="order">
+            <div className="between order-head">
+              <strong>Заказ №{order.id} · {order.itemsCount} шт. комплектующих</strong>
+              <span className="actions-cell">
+                <span className={`status status-${order.status}`}>{ORDER_STATUSES[order.status] || order.status}</span>
+                <span className={`status ${order.isPaid ? "status-delivered" : "status-processing"}`}>
+                  {PAYMENT_STATUSES[order.paymentStatus] || order.paymentLabel}
+                </span>
+              </span>
             </div>
-          );
-        })}
-      </div>
+            <p className="muted small">
+              Оформлен: {formatDate(order.createdAt)} · Доставка: {formatDay(order.deliveryDate)} · {order.address}
+            </p>
+            <ul className="order-items">
+              {order.items.map((item, i) => (
+                <li key={i} className="between small">
+                  <span>{item.carName} × {item.quantity} шт.</span>
+                  <span>{rub(item.priceAfter)}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="between">
+              <span>
+                Куплено: {order.itemsCount} шт.
+                {order.isPaid && order.paidAt ? ` · оплачен ${formatDate(order.paidAt)}` : ""}
+              </span>
+              <strong>Общая сумма заказа: {rub(order.totalAfter)}</strong>
+            </div>
+            {!order.isPaid && order.status !== "cancelled" && (
+              <button className="btn btn-primary btn-sm mt" disabled={payingId === order.id} onClick={() => payOrder(order)}>
+                {payingId === order.id ? "Оплачиваем..." : `Оплатить заказ №${order.id} — ${rub(order.totalAfter)}`}
+              </button>
+            )}
+            {order.isPaid && (
+              <p className="success small">Заказ оплачен. Статус оплаты изменить нельзя — админ не может вернуть «Ожидает оплаты».</p>
+            )}
+          </div>
+        ))}
+      </section>
     </div>
   );
 }

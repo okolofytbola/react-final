@@ -1,74 +1,124 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useCart } from "./CartContext";
-import { useAuth } from "./AuthContext";
-import { useTheme } from "./ThemeContext";
-import * as api from "./api";
+import DiscountBadge from "./DiscountBadge";
+import { rub, MAX_QTY_PER_ITEM } from "./utils";
 
 function Cart() {
-  const { cart, loading, error, changeQuantity, removeItem, reloadCart } = useCart();
-  const { user } = useAuth();
-  const { theme } = useTheme();
+  const { cart, totals, dayCapacity, reserveMinutes, loading, loaded, error, changeQuantity, removeItem, reloadCart } = useCart();
   const navigate = useNavigate();
-  const [checkoutError, setCheckoutError] = useState("");
-  const [address, setAddress] = useState(user.address || "");
-
-  const textColor = theme === "light" ? "#000000" : "#ffffff";
-  const btnStyle = { backgroundColor: theme === "light" ? "#eeeeee" : "#444444", color: textColor };
-
-  const totalBefore = cart.reduce((sum, item) => sum + item.priceBefore, 0);
-  const totalAfter = cart.reduce((sum, item) => sum + item.priceAfter, 0);
-
-  async function handleCheckout() {
-    setCheckoutError("");
-    try {
-      const order = await api.checkout(user.token, address);
-      reloadCart();
-      navigate("/checkout", { state: { order } });
-    } catch (err) {
-      setCheckoutError(err.message);
-    }
-  }
+  const tooManyForOneDay = totals.itemsCount > dayCapacity;
+  const reserve = reserveMinutes || 60;
 
   return (
-    <div style={{ padding: "10px" }}>
-      <h1 style={{ color: textColor }}>Корзина</h1>
-      {loading && <p style={{ color: textColor }}>Загрузка...</p>}
-      {error && <p style={{ color: "#c0392b" }}>{error}</p>}
-      {!loading && cart.length === 0 && <p style={{ color: textColor }}>Корзина пуста</p>}
-      {cart.map((item) => (
-        <div key={item.id} style={{ display: "flex", alignItems: "center", marginBottom: "10px" }}>
-          <img src={item.image_url} alt={item.name} width="80" style={{ marginRight: "10px" }} />
-          <span style={{ color: textColor, marginRight: "10px", width: "220px" }}>
-            {item.name} × {item.quantity}
-            {item.discount > 0 && (
-              <span style={{ color: "#c0392b" }}> (скидка {item.discount}%)</span>
-            )}
-          </span>
-          <button style={btnStyle} onClick={() => changeQuantity(item.id, item.quantity + 1)}>+</button>
-          <button style={btnStyle} onClick={() => changeQuantity(item.id, item.quantity - 1)}>-</button>
-          <button style={{ ...btnStyle, marginLeft: "10px" }} onClick={() => removeItem(item.id)}>Удалить</button>
-          <span style={{ color: textColor, marginLeft: "10px" }}>
-            {Math.round(item.priceAfter).toLocaleString("ru-RU")} ₽
-          </span>
+    <div className="page">
+      <h1>Корзина</h1>
+      <p className="muted small">
+        <strong>Ваши машины забронированы.</strong> Пока товар лежит в корзине, он считается занятым — другие
+        покупатели видят его как разобранный. Бронь держится {reserve} минут (потом машины снова становятся
+        свободными), после оформления заказа машины списываются со склада окончательно.
+        <br />
+        <strong>Лимиты:</strong> за раз можно взять не больше {MAX_QTY_PER_ITEM} шт. одной модели, а на один день
+        доставки магазин отдаёт не больше {dayCapacity} машин всего (столько сотрудников и автовозов) — в корзине
+        сейчас {totals.itemsCount} шт.{" "}
+        {tooManyForOneDay
+          ? ` Это больше, чем влезает в один день: оформите заказ частями, например ${dayCapacity} машин на одну дату, остальное на другую.`
+          : "."}
+      </p>
+      {error && (
+        <div className="alert alert-error">
+          <span>{error}</span>
+          <button className="btn btn-sm" onClick={reloadCart}>Повторить</button>
         </div>
-      ))}
+      )}
+      {(loading || !loaded) && cart.length === 0 && !error && <p className="muted">Загрузка корзины...</p>}
+      {loaded && !loading && cart.length === 0 && !error && (
+        <div className="empty">
+          <p>Корзина пуста.</p>
+          <Link className="btn btn-primary" to="/">Перейти в каталог</Link>
+        </div>
+      )}
+
       {cart.length > 0 && (
-        <>
-          <h3 style={{ color: textColor }}>Сумма без скидки: {Math.round(totalBefore).toLocaleString("ru-RU")} ₽</h3>
-          <h3 style={{ color: textColor }}>Итого со скидкой: {Math.round(totalAfter).toLocaleString("ru-RU")} ₽</h3>
-          <div style={{ marginBottom: "10px" }}>
-            <label style={{ color: textColor, display: "block", marginBottom: "4px" }}>Адрес доставки</label>
-            <input
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              placeholder="Укажите адрес, если отличается от основного"
-              style={{ width: "320px", padding: "6px" }}
-            />
+        <div className="cart-layout">
+          <div className="cart-list">
+            {cart.map((item) => (
+              <div key={item.id} className="cart-item card">
+                <img src={item.imageUrl} alt={item.name} className="cart-img" />
+                <div className="cart-info">
+                  <h3>{item.name}</h3>
+                  <p className="muted small">
+                    Код: {item.code} · {item.ownedYears} г. владения · {item.mileageKm.toLocaleString("ru-RU")} км
+                  </p>
+                  <p className="small">
+                    Цена за шт.:{" "}
+                    {item.discount > 0 && <span className="old-price">{rub(item.unitPrice)}</span>}{" "}
+                    <strong>{rub(item.unitFinal)}</strong>
+                  </p>
+                  <p className={item.outOfStock || item.stockShortage ? "error small" : "muted small"}>
+                    {item.outOfStock
+                      ? "Товар закончился — все машины выкуплены, уберите его из корзины"
+                      : item.stockShortage
+                        ? `Осталось всего ${item.stock} шт. — уменьшите количество до ${item.stock}`
+                        : `На складе: ${item.stock} шт. · ваши ${item.quantity} шт. забронированы${item.reservedUntil ? ` до ${new Date(item.reservedUntil).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}` : ""}`}
+                  </p>
+                  <DiscountBadge item={item} />
+                  <div className="qty-row">
+                    <div className="qty">
+                      <button className="btn btn-sm" disabled={item.quantity <= 1} onClick={() => changeQuantity(item.id, item.quantity - 1)} aria-label="Уменьшить">
+                        −
+                      </button>
+                      <span className="qty-value">{item.quantity}</span>
+                      <button
+                        className="btn btn-sm"
+                        disabled={item.quantity >= Math.min(MAX_QTY_PER_ITEM, item.stock)}
+                        onClick={() => changeQuantity(item.id, item.quantity + 1)}
+                        aria-label="Увеличить"
+                      >
+                        +
+                      </button>
+                    </div>
+                    <button className="btn btn-sm btn-danger" onClick={() => removeItem(item.id)}>Удалить</button>
+                  </div>
+                  <p className="muted small">
+                    {item.quantity >= Math.min(MAX_QTY_PER_ITEM, item.stock)
+                      ? `Больше не добавить: на складе ${item.stock} шт., в корзине ${item.quantity}. Другие товары доступны`
+                      : `Можно до ${Math.min(MAX_QTY_PER_ITEM, item.stock)} шт. этого товара`}
+                  </p>
+                </div>
+                <div className="cart-sum">
+                  {item.discount > 0 && <div className="old-price">{rub(item.priceBefore)}</div>}
+                  <div className="line-total">{rub(item.priceAfter)}</div>
+                </div>
+              </div>
+            ))}
           </div>
-          {checkoutError && <p style={{ color: "#c0392b" }}>{checkoutError}</p>}
-          <button style={btnStyle} onClick={handleCheckout}>Оформить заказ</button>
-        </>
+
+          <aside className="summary card">
+            <h3>Чек</h3>
+            <ul className="receipt-lines">
+              {cart.map((item) => (
+                <li key={item.id}>
+                  <div className="between">
+                    <span>{item.name} × {item.quantity}</span>
+                    <span>{rub(item.priceBefore)}</span>
+                  </div>
+                  {item.discount > 0 && (
+                    <div className="between muted small">
+                      <span>{item.discountSource === "coupon" ? `Купон ${item.couponCode}` : "Скидка на товар"} −{item.discount}%</span>
+                      <span>−{rub(item.saved)}</span>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <div className="between"><span>Цена до скидок</span><span>{rub(totals.totalBefore)}</span></div>
+            <div className="between"><span>Скидка</span><span className="success">−{rub(totals.totalSaved)}</span></div>
+            <div className="between total"><span>Итого</span><span>{rub(totals.totalAfter)}</span></div>
+            <button className="btn btn-primary btn-block mt" onClick={() => navigate("/checkout")}>
+              Оформить заказ
+            </button>
+          </aside>
+        </div>
       )}
     </div>
   );

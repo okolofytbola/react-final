@@ -1,4 +1,19 @@
-const BASE_URL = "http://localhost:3001/api";
+const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:3001/api";
+
+let unauthorizedHandler = null;
+
+export function setUnauthorizedHandler(fn) {
+  unauthorizedHandler = fn;
+}
+
+export class ApiError extends Error {
+  constructor(message, { kind, status, code } = {}) {
+    super(message);
+    this.kind = kind;
+    this.status = status;
+    this.code = code;
+  }
+}
 
 async function request(path, token, options = {}) {
   const headers = { "Content-Type": "application/json", ...options.headers };
@@ -8,95 +23,107 @@ async function request(path, token, options = {}) {
   try {
     response = await fetch(`${BASE_URL}${path}`, { ...options, headers });
   } catch {
-    throw new Error("Сервер недоступен. Проверьте, что backend запущен на http://localhost:3001");
+    throw new ApiError(
+      "Сервер временно недоступен: ведутся технические работы. Пожалуйста, повторите попытку позже.",
+      { kind: "network" }
+    );
   }
 
-  let data = {};
+  let data = null;
   try {
     data = await response.json();
   } catch {
-    throw new Error(`Сервер вернул непредвиденный ответ (код ${response.status})`);
+    data = null;
   }
 
   if (!response.ok) {
-    throw new Error(data.error || `Ошибка запроса (код ${response.status})`);
+    const message =
+      (data && data.error) ||
+      (response.status >= 500
+        ? `Ошибка на сервере (код ${response.status}), подробности не переданы`
+        : `Ошибка запроса (код ${response.status})`);
+    if (data && data.code === "SESSION_EXPIRED" && token && unauthorizedHandler) unauthorizedHandler();
+    throw new ApiError(message, {
+      kind: response.status >= 500 ? "server" : "request",
+      status: response.status,
+      code: data && data.code,
+    });
+  }
+
+  if (data === null) {
+    throw new ApiError(`Сервер вернул непредвиденный ответ (код ${response.status})`, { kind: "server" });
   }
   return data;
 }
 
-export function login(email, password) {
-  return request("/login", null, { method: "POST", body: JSON.stringify({ email, password }) });
-}
+const json = (method, body) => ({ method, body: JSON.stringify(body) });
 
-export function register(email, password, fullName) {
-  return request("/register", null, { method: "POST", body: JSON.stringify({ email, password, fullName }) });
-}
+export const checkHealth = () => request("/test-db", null);
 
-export function updateProfile(token, currentPassword, email, password, address) {
-  return request("/profile", token, {
-    method: "PUT",
-    body: JSON.stringify({ currentPassword, email, password, address }),
-  });
-}
+export const login = (email, password) => request("/login", null, json("POST", { email, password }));
+export const register = (data) => request("/register", null, json("POST", data));
+export const logout = (token) => request("/logout", token, { method: "POST" });
+export const getProfile = (token) => request("/profile", token);
+export const updateProfile = (token, data) => request("/profile", token, json("PUT", data));
 
-export function getCategories() {
-  return request("/categories", null);
-}
+export const requestPasswordCode = (email) => request("/password/forgot", null, json("POST", { email }));
+export const resetPassword = (email, code, password) => request("/password/reset", null, json("POST", { email, code, password }));
 
-export function addCategory(token, name) {
-  return request("/categories", token, { method: "POST", body: JSON.stringify({ name }) });
-}
+export const getCategories = () => request("/categories", null);
+export const addCategory = (token, name) => request("/categories", token, json("POST", { name }));
+export const renameCategory = (token, id, name) => request(`/categories/${id}`, token, json("PUT", { name }));
+export const deleteCategory = (token, id, moveTo) =>
+  request(`/categories/${id}${moveTo ? `?moveTo=${moveTo}` : ""}`, token, { method: "DELETE" });
 
-export function getCoupons(token) {
-  return request("/coupons", token);
-}
+export const getCoupons = (token, search = "") =>
+  request(`/coupons${search ? `?search=${encodeURIComponent(search)}` : ""}`, token);
+export const addCoupon = (token, data) => request("/coupons", token, json("POST", data));
+export const updateCoupon = (token, id, data) => request(`/coupons/${id}`, token, json("PUT", data));
+export const deleteCoupon = (token, id) => request(`/coupons/${id}`, token, { method: "DELETE" });
 
-export function addCoupon(token, code, name, discountPercent) {
-  return request("/coupons", token, { method: "POST", body: JSON.stringify({ code, name, discountPercent }) });
-}
+export const getUsers = (token, search = "") =>
+  request(`/users${search ? `?search=${encodeURIComponent(search)}` : ""}`, token);
+export const createUser = (token, data) => request("/users", token, json("POST", data));
 
-export function assignCoupon(token, couponId, targetUserId) {
-  return request(`/coupons/${couponId}/assign`, token, {
-    method: "PUT",
-    body: JSON.stringify({ userId: targetUserId }),
-  });
-}
+export const setUserRole = (token, userId, role) => request(`/users/${userId}/role`, token, json("PUT", { role }));
+export const setUserCoupon = (token, userId, couponId) =>
+  request(`/users/${userId}/coupon`, token, json("PUT", { couponId }));
 
-export function getUsers(token) {
-  return request("/users", token);
-}
-
-export function getCars(search, categoryIds) {
+export const getCars = ({ token, search, categoryIds, onlyDiscount, sort, minPrice, maxPrice } = {}) => {
   const params = new URLSearchParams();
   if (search) params.set("search", search);
   if (categoryIds && categoryIds.length) params.set("categoryIds", categoryIds.join(","));
+  if (onlyDiscount) params.set("onlyDiscount", "1");
+  if (sort) params.set("sort", sort);
+  if (minPrice !== undefined && minPrice !== "") params.set("minPrice", minPrice);
+  if (maxPrice !== undefined && maxPrice !== "") params.set("maxPrice", maxPrice);
   const query = params.toString();
-  return request(`/cars${query ? `?${query}` : ""}`, null);
-}
+  return request(`/cars${query ? `?${query}` : ""}`, token || null);
+};
 
-export function setCarDiscount(token, carId, discountPercent) {
-  return request(`/cars/${carId}/discount`, token, {
-    method: "PUT",
-    body: JSON.stringify({ discountPercent }),
-  });
-}
+export const getDeliveryCapacity = (days = 21) => request(`/delivery/capacity?days=${days}`, null);
+export const deleteCar = (token, id) => request(`/cars/${id}`, token, { method: "DELETE" });
+export const createCar = (token, data) => request("/cars", token, json("POST", data));
+export const updateCar = (token, id, data) => request(`/cars/${id}`, token, json("PUT", data));
 
-export function getCart(token) {
-  return request("/cart", token);
-}
+export const getCart = (token) => request("/cart", token);
+export const addToCart = (token, carId) => request("/cart", token, json("POST", { carId }));
+export const updateCartQuantity = (token, itemId, quantity) => request(`/cart/${itemId}`, token, json("PUT", { quantity }));
+export const removeFromCart = (token, itemId) => request(`/cart/${itemId}`, token, { method: "DELETE" });
+export const checkout = (token, address, deliveryDate, saveAddress) =>
+  request("/orders", token, json("POST", { address, deliveryDate, saveAddress }));
+export const getOrders = (token) => request("/orders", token);
+export const payOrder = (token, id) => request(`/orders/${id}/pay`, token, { method: "POST" });
 
-export function addToCart(token, carId) {
-  return request("/cart", token, { method: "POST", body: JSON.stringify({ carId }) });
-}
+export const getAllOrders = (token, search = "") =>
+  request(`/admin/orders${search ? `?search=${encodeURIComponent(search)}` : ""}`, token);
+export const setOrderStatus = (token, id, status) => request(`/orders/${id}/status`, token, json("PUT", { status }));
+export const setOrderPayment = (token, id, paymentStatus) =>
+  request(`/orders/${id}/payment`, token, json("PUT", { paymentStatus }));
 
-export function updateCartQuantity(token, itemId, quantity) {
-  return request(`/cart/${itemId}`, token, { method: "PUT", body: JSON.stringify({ quantity }) });
-}
-
-export function removeFromCart(token, itemId) {
-  return request(`/cart/${itemId}`, token, { method: "DELETE" });
-}
-
-export function checkout(token, address) {
-  return request("/orders", token, { method: "POST", body: JSON.stringify({ address }) });
-}
+export const getCarReviews = (token, carId) => request(`/cars/${carId}/reviews`, token || null);
+export const addReview = (token, carId, data) => request(`/cars/${carId}/reviews`, token, json("POST", data));
+export const getAllReviews = (token, search = "") =>
+  request(`/reviews${search ? `?search=${encodeURIComponent(search)}` : ""}`, token);
+export const updateReview = (token, id, data) => request(`/reviews/${id}`, token, json("PUT", data));
+export const deleteReview = (token, id) => request(`/reviews/${id}`, token, { method: "DELETE" });
